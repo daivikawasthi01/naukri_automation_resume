@@ -1,5 +1,4 @@
 import os
-import time
 import shutil
 from pathlib import Path
 
@@ -8,6 +7,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
@@ -94,8 +94,34 @@ def update_naukri():
         print(f"Uploading resume: {RESUME_PATH}")
         upload_input.send_keys(str(RESUME_PATH))
 
-        print("Waiting for upload to complete...")
-        time.sleep(10)
+        # Naukri's flow: the file lands on their server as soon as send_keys
+        # fires, but it is only PARSED, not attached to the profile, until you
+        # click through Continue -> the AI resume editor's "Add to profile" ->
+        # "Yes, replace". Skipping these is why past runs logged success but
+        # never actually changed the live profile.
+        print("Confirming upload (Continue)...")
+        wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//a[contains(text(), 'Continue')]")
+        )).click()
+
+        print("Adding parsed resume to profile...")
+        wait.until(EC.element_to_be_clickable(
+            (By.XPATH, "//button[contains(text(), 'Add to profile')]")
+        )).click()
+
+        print("Confirming replacement (if prompted)...")
+        try:
+            WebDriverWait(driver, 8).until(EC.element_to_be_clickable(
+                (By.XPATH, "//button[contains(text(), 'Yes, replace')]")
+            )).click()
+        except TimeoutException:
+            pass  # no existing resume to replace (first-ever upload)
+
+        # Verify the profile actually reflects the new resume before declaring victory
+        driver.get(NAUKRI_PROFILE_URL)
+        wait.until(EC.presence_of_element_located(
+            (By.XPATH, "//*[contains(text(), 'Created with AI resume maker')]")
+        ))
 
         print("✅ Resume updated successfully")
 

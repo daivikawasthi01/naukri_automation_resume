@@ -19,7 +19,6 @@ cd "$PROJECT_DIR"
 source "$VENV_DIR/bin/activate"
 
 # Run script
-pip install -r requirements.txt
 python naukri.py >> "$LOGFILE" 2>&1
 
 EXIT_CODE=$?
