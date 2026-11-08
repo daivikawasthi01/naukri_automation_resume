@@ -1,69 +1,46 @@
 import os
-import shutil
+import time
+from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
 from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.firefox.service import Service
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 # ------------------------------------------------------------------
-# Load .env explicitly (this is the missing piece)
-# ------------------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
-
-EMAIL = os.getenv("EMAIL")
-PASSWORD = os.getenv("PASSWORD")
-
-if not EMAIL or not PASSWORD:
-    raise RuntimeError("EMAIL or PASSWORD not set. Check .env file")
-
-# ------------------------------------------------------------------
 # Paths
 # ------------------------------------------------------------------
-RESUME_PATH = BASE_DIR / "Your_Resume.pdf"
-FIREFOX_PROFILE = BASE_DIR / "naukri_profile"
+BASE_DIR = Path(__file__).resolve().parent
+RESUME_PATH = BASE_DIR / "Daivik_Awasthi_Resume.pdf"
+# Copy of the Chrome profile that is already logged in to Naukri.
+# Created by copy_chrome_profile.sh. No credentials are used.
+CHROME_USER_DATA = BASE_DIR / "chrome_profile"
+CHROME_PROFILE_DIR = os.getenv("CHROME_PROFILE_DIR", "Default")
 NAUKRI_PROFILE_URL = "https://www.naukri.com/mnjuser/profile"
 
-def get_firefox_binary():
-    """Finds the actual firefox executable, prioritizing native paths and snap."""
-    # Check snap real binary first (geckodriver hates wrapper scripts like /usr/bin/firefox or /snap/bin/firefox)
-    if os.path.exists("/snap/firefox/current/usr/lib/firefox/firefox"):
-        return "/snap/firefox/current/usr/lib/firefox/firefox"
-
-    # Check flatpak
-    if os.path.exists("/var/lib/flatpak/app/org.mozilla.firefox"):
-        return "flatpak run org.mozilla.firefox" # Geckodriver might still complain here, but it's an option
-
-    # Fallback to shutil
-    ff_path = shutil.which("firefox")
-    if ff_path:
-        return ff_path
-
-    return None
 
 def update_naukri():
+    if not (CHROME_USER_DATA / "Local State").exists():
+        raise RuntimeError(
+            "chrome_profile/ not found. Close Chrome and run copy_chrome_profile.sh first."
+        )
+    if not RESUME_PATH.exists():
+        raise RuntimeError(f"Resume not found: {RESUME_PATH}")
+
     options = Options()
-    options.add_argument("-headless")
-    options.add_argument("-profile")
-    options.add_argument(str(FIREFOX_PROFILE))
+    if os.getenv("HEADLESS") == "1":
+        options.add_argument("--headless=new")
+    options.add_argument(f"--user-data-dir={CHROME_USER_DATA}")
+    options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
+    options.add_argument("--window-size=1400,1000")
+    # chromedriver defaults to a mock keychain, which cannot decrypt the
+    # copied cookies. Let Chrome use the real macOS Keychain.
+    options.add_experimental_option("excludeSwitches", ["use-mock-keychain", "password-store"])
 
-    # Set the resolved binary location
-    binary = get_firefox_binary()
-    if binary:
-        options.binary_location = binary
-
-    # Stability in background environments
-    options.set_preference("browser.tabs.remote.autostart", False)
-    options.set_preference("browser.tabs.remote.autostart.2", False)
-
-    service = Service()
-    driver = webdriver.Firefox(options=options, service=service)
+    driver = webdriver.Chrome(options=options)
 
     try:
         print("Navigating to Naukri Profile...")
@@ -71,56 +48,31 @@ def update_naukri():
 
         wait = WebDriverWait(driver, 25)
 
-        # ---------------- LOGIN ----------------
+        # ---------------- SESSION CHECK ----------------
         if "login" in driver.current_url:
-            print("Session expired. Logging in...")
-
-            wait.until(EC.presence_of_element_located((By.ID, "usernameField"))).send_keys(EMAIL)
-            driver.find_element(By.ID, "passwordField").send_keys(PASSWORD)
-
-            # Use explicit wait for the submit button and click it
-            login_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Login') and @type='submit']")))
-            driver.execute_script("arguments[0].click();", login_btn)
-
-            wait.until(EC.invisibility_of_element_located((By.ID, "usernameField")))
-            print("Login successful.")
-
-            driver.get(NAUKRI_PROFILE_URL)
+            raise RuntimeError(
+                "Naukri session expired. Re-run copy_chrome_profile.sh from a "
+                "Chrome that is still logged in to Naukri."
+            )
 
         # ---------------- UPLOAD ----------------
+        # Naukri Campus profile: a plain file input, and the upload is saved
+        # as soon as the file is chosen (no confirm dialogs).
         print("Locating Resume Upload element...")
-        upload_input = wait.until(EC.presence_of_element_located((By.ID, "attachCV")))
+        upload_input = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "input.upload-input"))
+        )
 
         print(f"Uploading resume: {RESUME_PATH}")
         upload_input.send_keys(str(RESUME_PATH))
 
-        # Naukri's flow: the file lands on their server as soon as send_keys
-        # fires, but it is only PARSED, not attached to the profile, until you
-        # click through Continue -> the AI resume editor's "Add to profile" ->
-        # "Yes, replace". Skipping these is why past runs logged success but
-        # never actually changed the live profile.
-        print("Confirming upload (Continue)...")
-        wait.until(EC.element_to_be_clickable(
-            (By.XPATH, "//a[contains(text(), 'Continue')]")
-        )).click()
-
-        print("Adding parsed resume to profile...")
-        wait.until(EC.element_to_be_clickable(
-            (By.XPATH, "//button[contains(text(), 'Add to profile')]")
-        )).click()
-
-        print("Confirming replacement (if prompted)...")
-        try:
-            WebDriverWait(driver, 8).until(EC.element_to_be_clickable(
-                (By.XPATH, "//button[contains(text(), 'Yes, replace')]")
-            )).click()
-        except TimeoutException:
-            pass  # no existing resume to replace (first-ever upload)
-
-        # Verify the profile actually reflects the new resume before declaring victory
+        # Verify: reload and check the profile shows today's upload date
+        today = datetime.now()
+        expected = f"Uploaded on {today.strftime('%b')} {today.day}, {today.year}"
+        time.sleep(5)
         driver.get(NAUKRI_PROFILE_URL)
         wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//*[contains(text(), 'Created with AI resume maker')]")
+            (By.XPATH, f"//*[contains(text(), '{expected}')]")
         ))
 
         print("✅ Resume updated successfully")
@@ -135,5 +87,4 @@ def update_naukri():
 
 
 if __name__ == "__main__":
-    FIREFOX_PROFILE.mkdir(exist_ok=True)
     update_naukri()
