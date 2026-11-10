@@ -4,8 +4,9 @@
 set -e
 
 SRC="$HOME/Library/Application Support/Google/Chrome"
-PROFILE="${1:-Default}"
-DEST="$(cd "$(dirname "$0")" && pwd)/chrome_profile"
+PROFILE="${1:-${CHROME_PROFILE_DIR:-Default}}"
+FINAL="$(cd "$(dirname "$0")" && pwd)/chrome_profile"
+DEST="$FINAL.new"
 
 if [ -z "$FORCE" ] && pgrep -x "Google Chrome" >/dev/null; then
     echo "Chrome is running. Quit it (Cmd+Q) and run this again." >&2
@@ -31,4 +32,8 @@ if [ -n "$FORCE" ]; then
     done
 fi
 
-echo "Copied profile '$PROFILE' to $DEST"
+# Swap in the new copy only after everything above succeeded
+rm -rf "$FINAL"
+mv "$DEST" "$FINAL"
+
+echo "Copied profile '$PROFILE' to $FINAL"

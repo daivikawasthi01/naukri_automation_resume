@@ -1,4 +1,4 @@
-.env
+com.daivik.naukri-resume.plist
 venv/
 chrome_profile/
 naukri_profile/
@@ -7,3 +7,4 @@ naukri_log.txt
 debug.txt
 error_screenshot.png
 Daivik_Awasthi_Resume.pdf
+launchd.*.log
